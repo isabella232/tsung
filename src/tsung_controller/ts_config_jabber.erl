@@ -63,6 +63,7 @@ parse_config(Element = #xmlElement{name=jabber},
     Status= ts_config:getAttr(string,Element#xmlElement.attributes, status, "Available"),
     Resource= ts_config:getAttr(string,Element#xmlElement.attributes, resource, "tsung"),
     Type= list_to_atom(TypeStr),
+    Receipt = list_to_atom(ts_config:getAttr(string,Element#xmlElement.attributes, receipt, "false")),
     Version = ts_config:getAttr(string,Element#xmlElement.attributes, version, "1.0"),
     Room = ts_config:getAttr(string,Element#xmlElement.attributes, room, undefined),
     Nick = ts_config:getAttr(string,Element#xmlElement.attributes, nick, undefined),
@@ -147,7 +148,8 @@ parse_config(Element = #xmlElement{name=jabber},
                                     node_type = NodeType,
                                     subid = SubId,
                                     version = Version,
-                                    prefix = UserPrefix
+                                    prefix = UserPrefix,
+                                    receipt = Receipt
                                    }
                    },
     ts_config:mark_prev_req(Id-1, Tab, CurS),

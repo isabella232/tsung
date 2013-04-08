@@ -81,7 +81,6 @@ init(_Args) ->
 initialize({config, Val}, State) ->
     {next_state, receiver, State#state{nclient=Val}}.
 
-
 %% now all the clients are connected, let's start to ack them
 receiver({connected, Pid}, #state{pidlist=List, nclient=1}) ->
     ?LOG("All connected, global ack!",?NOTICE),
@@ -95,7 +94,10 @@ receiver({connected, Pid}, #state{pidlist=List, nclient=N}) ->
 
 %% timeout event, now we start to send ack, by sending a timeout event immediatly
 receiver(timeout, StateData) ->
-    {next_state, ack, StateData,1}.
+    {next_state, ack, StateData,1};
+
+receiver(_, StateData) ->
+    {next_state, receiver, StateData}.
 
 %% no more ack to send, stop
 ack(timeout, #state{pidlist=[]}) ->
