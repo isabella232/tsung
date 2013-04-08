@@ -21,7 +21,8 @@
                      {debug_level, 2},
                      {snd_size, 32768},      % send buffer size
                      {rcv_size, 32768},      % receive buffer size
-                     {tcp_timeout, 600000},  % 10min timeout
+                     {idle_timeout, 600000},  % 10min timeout
+                     {global_ack_timeout, infinity}, % global ack timeout
                      {connect_timeout, 30000},
                      {max_warm_delay, 15000},
                      {dump, full},           % full or light
@@ -39,8 +40,9 @@
                      {jabber_users, 2000000},
                      {jabber_username, "c"},
                      {jabber_password, "pas"},
-                     {jabber_domain, "mydomain.com"}
-
+                     {jabber_domain, "mydomain.com"},
+%%% -------- WEBSOCKET OPTIONS
+                     {websocket_path, "/chat"}
                     ]},
        {applications, [ @ERLANG_APPLICATIONS@]},
        {mod,          {tsung, []}}

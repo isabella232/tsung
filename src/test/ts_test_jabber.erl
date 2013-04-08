@@ -25,6 +25,7 @@
 
 -compile(export_all).
 
+-include("ts_macros.hrl").
 -include("ts_profile.hrl").
 -include("ts_jabber.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -73,60 +74,168 @@ auth_sasl_test()->
     Res = << "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN' >AGp1bGlldAByMG0zMG15cjBtMzA=</auth>" >>,
     ?assertMatch(Res, ts_jabber_common:auth_sasl("juliet","r0m30myr0m30","PLAIN")).
 
-choose_id_user_test()->
-    ?assertEqual({user_defined,"user","pwd"}, ts_jabber:choose_or_cache_user_id(user_defined,"user","pwd")).
-choose_id_user1_test()->
-    ts_jabber:choose_or_cache_user_id(user_defined,"user","pwd"),
-    ?assertEqual({user_defined,"user","pwd"}, ts_jabber:choose_or_cache_user_id(0,"user","pwd")).
-choose_id2_test()->
-    erase(xmpp_user_id),
+add_dynparams_test()->
     ts_user_server:start(),
     ts_user_server:reset(100),
-    ?assertEqual({1,"user","pwd"}, ts_jabber:choose_or_cache_user_id(0,"user","pwd")).
-choose_id3_test()->
-    erase(xmpp_user_id),
-    ts_jabber:choose_or_cache_user_id(0,"user","pwd"),
-    ?assertEqual({2,"user","pwd"}, ts_jabber:choose_or_cache_user_id(0,"user","pwd")).
-
-add_dynparams_test()->
-    erase(xmpp_user_id),
-    Session = #jabber{id=0,username="foo",passwd="bar",domain={domain,"localdomain"}},
-    ?assertEqual(Session#jabber{id=3,user_server=default,domain="localdomain"}, ts_jabber:add_dynparams(true,[],Session,"localhost")).
+    ts_msg_server:start(),
+    Req = #jabber{id=0,prefix="foo",username="foo",passwd="bar",type='connect',domain={domain,"localdomain"}},
+    {_,Session} = ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
+    ?assertEqual(Req#jabber{id=1,username="foo1",passwd="bar1",user_server=default,domain="localdomain"}, ts_jabber:add_dynparams(true,{[],Session},Req,"localhost")).
 
 add_dynparams2_test()->
-    Session = #jabber{id=0,username="foo",passwd="bar",domain={domain,"localdomain"}},
-    ?assertEqual(Session#jabber{id=3,user_server=default,domain="localdomain"}, ts_jabber:add_dynparams(true,[],Session,"localhost")).
+    Req = #jabber{id=0,prefix="foo",username="foo",passwd="bar",type='connect', domain={domain,"localdomain"}},
+    {_,Session} = ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
+    ?assertEqual(Req#jabber{id=2,username="foo2",passwd="bar2",user_server=default,domain="localdomain"}, ts_jabber:add_dynparams(true,{[],Session},Req,"localhost")).
 
 get_message_test()->
-    erase(xmpp_user_id),
-    ts_msg_server:start(),
-    Session = #jabber{id=0,username="foo",type='auth_set_plain',passwd="bar",domain={domain,"localdomain"}},
-    Req=ts_jabber:add_dynparams(false,[],Session,"localhost"),
-    RepOK={<<"<iq id='1' type='set' ><query xmlns='jabber:iq:auth'><username>foo4</username><resource>tsung</resource><password>bar4</password></query></iq>" >>,undefined},
-    Rep=ts_jabber:get_message(Req,#state_rcv{}),
+    Req = #jabber{id=0,prefix="foo",username="foo",type='auth_set_plain',passwd="bar",domain={domain,"localdomain"},resource="tsung"},
+    RepOK = <<"<iq id='3' type='set' ><query xmlns='jabber:iq:auth'><username>foo3</username><resource>tsung</resource><password>bar3</password></query></iq>" >>,
+    {Rep,_}=ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
     ?assertEqual(RepOK,Rep ).
 
 get_message2_test()->
-    erase(xmpp_user_id),
-    Session = #jabber{id=user_defined,username="foo",type='auth_set_plain',passwd="bar",domain={domain,"localdomain"}},
-    Req=ts_jabber:add_dynparams(false,[],Session,"localhost"),
-    RepOK={<<"<iq id='2' type='set' ><query xmlns='jabber:iq:auth'><username>foo</username><resource>tsung</resource><password>bar</password></query></iq>" >>,undefined},
-    Rep=ts_jabber:get_message(Req,#state_rcv{}),
+    Req = #jabber{id=user_defined,username="foo",type='auth_set_plain',passwd="bar",domain={domain,"localdomain"},resource="tsung"},
+    RepOK = <<"<iq id='4' type='set' ><query xmlns='jabber:iq:auth'><username>foo</username><resource>tsung</resource><password>bar</password></query></iq>" >>,
+    {Rep,_} = ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
+    ?assertEqual(RepOK,Rep).
+
+pubsub_unsubscribe_test()->
+    ts_user_server:reset(1),
+    Req = #jabber{id=0,prefix="foo",username="foo",type='pubsub:unsubscribe',passwd="bar",domain={domain,"localdomain"},dest=random, node="node", pubsub_service="mypubsub", subid="myid",resource="tsung"},
+    RepOK= << "<iq to='mypubsub' type='set' id='5'><pubsub xmlns='http://jabber.org/protocol/pubsub'><unsubscribe node='/home/localdomain/foo1/node' jid='foo1@localdomain' subid='myid'/></pubsub></iq>" >>,
+    {Rep,_}=ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
     ?assertEqual(RepOK,Rep ).
 
+connect_legacy_test()->
+    ts_user_server:reset(1),
+    Req = #jabber{id=0,prefix="foo",username="foo",type='connect',passwd="bar",domain={domain,"localdomain"},resource="tsung", version="legacy"},
+    RepOK= <<"<?xml version='1.0'?><stream:stream  id='6' to='localdomain' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>" >>,
+    {Rep,_} = ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
+    ?assertEqual(RepOK,Rep).
 
-choose_id_limit_test()->
-    ts_user_server:reset(3),
-    erase(xmpp_user_id),
-    ts_jabber:choose_or_cache_user_id(0,"user","pwd"),
-    erase(xmpp_user_id),
-    ts_jabber:choose_or_cache_user_id(0,"user","pwd"),
-    erase(xmpp_user_id),
-    ts_jabber:choose_or_cache_user_id(0,"user","pwd"),
-    erase(xmpp_user_id),
-    ?assertExit(no_free_userid, ts_jabber:choose_or_cache_user_id(0,"user","pwd")).
+connect_xmpp_test()->
+    ts_user_server:reset(1),
+    Req = #jabber{id=0,prefix="foo",username="foo",type='connect',passwd="bar",domain={domain,"localdomain"},resource="tsung", version="1.0"},
+    RepOK= <<"<?xml version='1.0'?><stream:stream  id='7' to='localdomain' xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams'>" >>,
+    {Rep,_} = ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
+    ?assertEqual(RepOK,Rep).
 
 
+pubsub_subscribe_test()->
+    ts_user_server:reset(1),
+    Req = #jabber{id=0,prefix="foo",dest="foo2",username="foo",type='pubsub:subscribe',passwd="bar",domain={domain,"localdomain"},node="node", pubsub_service="mypubsub", resource="tsung"},
+    RepOK= << "<iq to='mypubsub' type='set' id='8'><pubsub xmlns='http://jabber.org/protocol/pubsub'><subscribe node='/home/localdomain/foo2/node' jid='foo1@localdomain'/></pubsub></iq>" >>,
+    {Rep,_}=ts_jabber:get_message(Req,#state_rcv{session=#jabber_session{}}),
+    ?assertEqual(RepOK,Rep ).
+
+get_online_test()->
+    ts_user_server:reset(100),
+    Id=ts_user_server:get_idle(),
+    IdOther = ts_user_server:get_idle(),
+    RealId  = ts_jabber_common:set_id(IdOther,"tsung","tsung"),
+    ts_user_server:add_to_online(default,RealId),
+    {ok,Offline} = ts_user_server:get_offline(),
+    {ok,Online}  = ts_user_server:get_online(Id),
+    ?assertEqual({1,3,2},{Id,Offline,Online} ).
+
+get_online_user_defined_test()->
+    ts_user_server:reset(0),
+    ts_msg_server:stop(),
+    ts_msg_server:start(),
+    User1 =  "tsung1",
+    User2 =  "tsung2",
+    User3 =  "tsung3",
+    Pwd   =  "sesame",
+    ts_user_server:add_to_connected({User1,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User1, Pwd) ),
+
+    ts_user_server:add_to_connected({User2,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User2, Pwd) ),
+
+    ts_user_server:add_to_connected({User3,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User3, Pwd) ),
+    ts_user_server:remove_connected(default, ts_jabber_common:set_id(user_defined,User3, Pwd) ),
+
+    {ok,Offline}=ts_user_server:get_offline(),
+
+    Msg = ts_jabber_common:get_message(#jabber{type = 'presence:directed', id=user_defined,username=User1,passwd=Pwd,prefix="prefix",
+                                               show = "foo", status="mystatus",user_server=default, domain="domain.org"}),
+    Res = "<presence id='1' to='tsung2@domain.org'><show>foo</show><status>mystatus</status></presence>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+get_offline_user_defined_test()->
+    ts_user_server:reset(0),
+    User1 =  "tsung1",
+    User3 =  "tsung3",
+    Pwd   =  "sesame",
+    ts_user_server:add_to_connected({User1,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User1, Pwd) ),
+
+    ts_user_server:add_to_connected({User3,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User3, Pwd) ),
+    ts_user_server:remove_connected(default, ts_jabber_common:set_id(user_defined,User3, Pwd) ),
+
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = offline, user_server=default, domain="domain.org"}),
+    Res = "<message id='2' to='tsung3@domain.org' type='chat'><body>hello</body></message>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+get_unique_user_defined_test()-> % this test must be runned just after get_offline_user_defined_test
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = unique, user_server=default, domain="domain.org"}),
+    Res = "<message id='3' to='tsung1@domain.org' type='chat'><body>hello</body></message>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+
+
+get_unique_test()->
+    ts_user_server:reset(2),
+    Id=ts_user_server:get_idle(),
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = unique, user_server=default, domain="domain.org"}),
+    Res = "<message id='4' to='prefix1@domain.org' type='chat'><body>hello</body></message>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+get_random_test()->
+    ts_user_server:reset(1),
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = random, user_server=default, domain="domain.org"}),
+    Res = "<message id='5' to='prefix1@domain.org' type='chat'><body>hello</body></message>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+get_random_user_defined_test()->
+    ts_user_server:reset(0),
+    Id = xmpp,
+    ts_user_server:set_random_fileid(Id),
+    ts_file_server:start(),
+    ts_file_server:read([{default,"./src/test/test_file_server.csv"},
+                         {Id,"./src/test/test_file_server2.csv"} ]),
+
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = random, user_server=default, domain="domain.org"}),
+    Res = "<message id='6' to='user1@domain.org' type='chat'><body>hello</body></message>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+get_offline_user_defined_offline_test()->
+    Id = xmpp,
+    ts_user_server:set_offline_fileid(Id),
+    ts_user_server:reset(0),
+    User1 =  "tsung1",
+    Pwd   =  "sesame",
+    ts_user_server:add_to_connected({User1,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User1, Pwd) ),
+
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = offline, user_server=default, domain="domain.org"}),
+    Res = "<message id='7' to='user1@domain.org' type='chat'><body>hello</body></message>",
+    ?assertEqual(Res, binary_to_list(Msg) ).
+
+get_offline_user_defined_no_offline_test()->
+    ts_user_server:reset(0),
+    User1 =  "user1",
+    Pwd   =  "sesame",
+    ts_user_server:add_to_connected({User1,Pwd}),
+    ts_user_server:add_to_online(default, ts_jabber_common:set_id(user_defined,User1, Pwd) ),
+
+    Msg = ts_jabber_common:get_message(#jabber{type = 'chat', prefix="prefix", data="hello", dest = offline, user_server=default, domain="domain.org"}),
+    %% Res = "<message id='8' to='user1@domain.org' type='chat'><body>hello</body></message>",
+    Res = "",
+    ts_user_server:set_offline_fileid(undefined),
+    ?assertEqual(Res, binary_to_list(Msg) ).
 
 myset_env()->
     myset_env(0).

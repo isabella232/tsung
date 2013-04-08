@@ -29,7 +29,7 @@
 -export([start/2, start_phase/3, stop/1, stop_all/1, status/1]).
 -behaviour(application).
 
--include("ts_profile.hrl").
+-include("ts_macros.hrl").
 -include_lib("kernel/include/file.hrl").
 
 %%----------------------------------------------------------------------
@@ -40,7 +40,7 @@
 %%----------------------------------------------------------------------
 start(_Type, _StartArgs) ->
     error_logger:tty(false),
-    {ok, {LogDir, _Name}} = ts_utils:setsubdir(?config(log_file)),
+    {ok, {LogDir, _Name}} = ts_utils:setsubdir(?config(log_dir)),
     erlang:display("Log directory is: " ++ LogDir),
     LogFile = filename:join(LogDir, atom_to_list(node()) ++ ".log"),
     case  error_logger:logfile({open, LogFile }) of
@@ -49,32 +49,37 @@ start(_Type, _StartArgs) ->
                 {ok, Pid} ->
                     {ok, Pid};
                 Error ->
-                    ?LOGF("Can't start ! ~p ~n",[Error], ?ERR),
+                    io:format(standard_error,"Can't start ! ~p ~n",[Error]),
                     Error
             end;
         {error, Reason} ->
             Msg = "Error while opening log file: " ,
-            ?LOGF(Msg ++ " ~p ~n",[Reason], ?ERR),
-            erlang:display(Msg ++ Reason),
+            io:format(standard_error,Msg ++ " ~p ~n",[Reason]),
             {error, Reason}
     end.
 
 start_phase(load_config, _StartType, _PhaseArgs) ->
-    Conf = ?config(config_file),
-    Timeout = case file:read_file_info(Conf) of
-                  {ok, #file_info{size=Size}} when Size > 10000000 -> % > 10MB
-                      erlang:display(["Can take up to 5mn to read config ",Size]),
-                      300000; % 10mn
-                  {ok, #file_info{size=Size}} when Size > 1000000 ->  % > 1MB
-                      erlang:display(["Can take up to 3mn to read config ",Size]),
-                      180000; % 5mn
-                  {ok, #file_info{size=Size}} ->
-                      120000  % 2mn
-                  end,
+    {Conf,Timeout} =
+        case ?config(config_file) of
+            "-"  ->
+                {standard_io, 120000}; %2mn timeout
+            File ->
+                T = case file:read_file_info(File) of
+                        {ok, #file_info{size=Size}} when Size > 10000000 -> % > 10MB
+                            io:format(standard_error,"Can take up to 5mn to read config file of size ~p~n ",[Size]),
+                            300000; % 5mn
+                        {ok, #file_info{size=Size}} when Size > 1000000 ->  % > 1MB
+                            io:format(standard_error,"Can take up to 3mn to read config file of size ~p~n ",[Size]),
+                            180000; % 3mn
+                        {ok, #file_info{size=_}} ->
+                            120000  % 2mn
+                    end,
+                {File, T}
+        end,
     case ts_config_server:read_config(Conf,Timeout) of
         {error,Reason}->
-            erlang:display(["Config Error, aborting ! ", Reason]),
-            init:stop();
+            io:format(standard_error,"Config Error, aborting ! ~p~n ",[Reason]),
+            init:stop(1);
         ok -> ok
     end;
 start_phase(start_os_monitoring, _StartType, _PhaseArgs) ->

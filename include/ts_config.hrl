@@ -27,6 +27,8 @@
 -vc('$Id$ ').
 -author('nicolas.niclausse@niclux.org').
 
+-include("ts_macros.hrl").
+
 -define(TSUNGPATH, "TSUNGPATH").
 -define(SESSION_POP_ERROR_MSG, "Total sum of session popularity is not equal to 100").
 
@@ -68,7 +70,11 @@
           seed = now,        % random seed: (default= current time)
           vhost_file = none, % file server user for virtual host jabber testing
           user_server_maxuid = none, % user_id max
+          oids=[],
           rate_limit,
+          total_popularity = 0, % should be 100 if we use probabilites; sum of all weights if we use weights
+          use_weights      , % true if we use weights instead of probabilities
+          total_server_weights=0,
           job_notify_port
          }).
 
@@ -83,7 +89,8 @@
 -record(server,
         {host,
          port,
-         type
+         type,
+         weight
         }).
 -record(session,
         { id,
@@ -95,7 +102,12 @@
           hibernate,
           proto_opts,
           rate_limit,
-          size
+          size,
+          client_ip,
+          server,
+          userid,
+          seed,
+          dump
         }).
 
 -record(arrivalphase,

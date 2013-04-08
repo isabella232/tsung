@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!DOCTYPE tsung SYSTEM "@prefix@/share/@PACKAGE_NAME@/@DTD@">
 <tsung loglevel="notice" dumptraffic="true" version="1.0">
-  
+
   <clients>
     <client host="localhost" use_controller_vm="true">
     </client>
@@ -10,7 +10,7 @@
 <servers>
    <server host='127.0.0.1' port='5222' type='tcp'/>
 </servers>
-  
+
 <load>
   <arrivalphase phase="1" duration="15" unit="second">
     <users maxnumber="1" interarrival="1.0" unit="second"></users>
@@ -27,7 +27,7 @@
 
 <sessions>
   <session probability="100" name="jabber-example" type="ts_jabber">
-    
+
     <request>
       <jabber type="connect" ack="local"></jabber>
     </request>
@@ -37,7 +37,6 @@
       <request> <jabber type="auth_get" ack="local"></jabber> </request>
       <request> <jabber type="auth_set_plain" ack="local"></jabber> </request>
     </transaction>
-    
     <request>
       <jabber type="privacy:get_names" ack="local"></jabber>
     </request>
@@ -45,15 +44,15 @@
     <request>
       <jabber type="privacy:set_active" ack="local"></jabber>
     </request>
-    
+
     <request>
       <jabber type="privacy:get_names" ack="local"></jabber>
     </request>
-    
-    <request> 
+
+    <request>
       <jabber type="close" ack="local"></jabber>
     </request>
-    
+
   </session>
 </sessions>
 </tsung>

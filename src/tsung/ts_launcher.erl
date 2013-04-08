@@ -33,6 +33,7 @@
 -author('nicolas.niclausse@niclux.org').
 
 -include("ts_profile.hrl").
+-include("ts_config.hrl").
 
 % wait up to 10ms after an error
 -define(NEXT_AFTER_FAILED_TIMEOUT, 10).
@@ -114,6 +115,7 @@ wait({launch, [], Seed}, State=#launcher{static_done=Static_done}) ->
     case ts_config_server:get_client_config(MyHostName) of
         {ok, {[{Intensity, Users, Duration}| Rest], StartDate, Max}} ->
             ?LOGF("Expected duration of first phase: ~p sec (~p users) ~n",[Duration/1000, Users], ?NOTICE),
+            check_max_users(Max),
             NewState = State#launcher{phases         = Rest,
                                       nusers         = Users,
                                       phase_nusers   = Users,
@@ -141,7 +143,7 @@ wait({launch, {[{Intensity, Users, Duration}| Rest], Max}, Seed}, State) ->
     {next_state, launcher, State#launcher{phases = Rest, nusers = Users,
                                        phase_nusers = Users,
                                        phase_duration=Duration,
-                                       phase_start = now(),
+                                       phase_start = ?NOW,
                                        intensity = Intensity, maxusers=Max},
      State#launcher.short_timeout};
 wait({static,0}, State) ->
@@ -161,7 +163,7 @@ wait_static({static, Static}, State=#launcher{maxusers=Max,intensity=Intensity,
     WarmTimeout = set_warm_timeout(StartDate)+round(ts_stats:exponential(Intensity)),
     Warm = lists:min([WarmTimeout,?config(max_warm_delay)]),
     ?LOGF("Activate launcher (~p users) in ~p msec ~n",[Users, Warm], ?NOTICE),
-    PhaseStart = ts_utils:add_time(now(), Warm div 1000),
+    PhaseStart = ts_utils:add_time(?NOW, Warm div 1000),
     NewMax = case Max > Static of
                true  ->
                      Max-Static;
@@ -183,7 +185,7 @@ launcher(timeout, State=#launcher{nusers        = Users,
                                   phases        = Phases,
                                   started_users = Started,
                                   intensity     = Intensity}) ->
-    BeforeLaunch = now(),
+    BeforeLaunch = ?NOW,
     case do_launch({Intensity,State#launcher.myhostname}) of
         {ok, Wait} ->
             case check_max_raised(State) of
@@ -204,29 +206,29 @@ launcher(timeout, State=#launcher{nusers        = Users,
                                                              nusers = NewUsers,
                                                              phase_nusers = NewUsers,
                                                              phase_duration=PhaseLength,
-                                                             phase_start = now(),
+                                                             phase_start = ?NOW,
                                                              intensity = NewIntensity},
                              round(Wait)};
                         {stop} ->
                             {stop, normal, State};
                         {continue} ->
-                            Now=now(),
+                            Now=?NOW,
                             LaunchDuration = ts_utils:elapsed(BeforeLaunch, Now),
                             %% to keep the rate of new users as expected,
                             %% remove the time to launch a client to the next
                             %% wait.
                             NewWait = case Wait > LaunchDuration of
-                                          true -> round(Wait - LaunchDuration);
+                                          true -> trunc(Wait - LaunchDuration);
                                           false -> 0
                                       end,
-                            ?DebugF("Real Wait =~p ~n", [NewWait]),
+                            ?DebugF("Real Wait = ~p (was ~p)~n", [NewWait,Wait]),
                             {next_state,launcher,State#launcher{nusers = Users-1, started_users=Started+1} , NewWait}
                     end
             end;
         error ->
-            % retry with the same user, wait randomly a few msec
+            % retry with the next user, wait randomly a few msec
             RndWait = random:uniform(?NEXT_AFTER_FAILED_TIMEOUT),
-            {next_state,launcher,State , RndWait}
+            {next_state,launcher,State#launcher{nusers = Users-1} , RndWait}
     end.
 
 
@@ -306,7 +308,7 @@ skip_empty_phase(State=#launcher{phases=Phases,phase_duration=Duration})->
                                                 nusers = NewUsers,
                                                 phase_nusers = NewUsers,
                                                 phase_duration=PhaseLength,
-                                                phase_start = now(),
+                                                phase_start = ?NOW,
                                                 intensity = NewIntensity}, 1}
     end.
 
@@ -354,7 +356,7 @@ change_phase(_N, _, _Current, {_Total, _}) ->
 check_max_raised(State=#launcher{phases=Phases,maxusers=Max,nusers=Users,
                               started_users=Started, phase_start=Start, phase_duration=Duration,
                               intensity=Intensity}) when Started >= Max ->
-    PendingDuration = Duration - ts_utils:elapsed(Start, now()),
+    PendingDuration = Duration - ts_utils:elapsed(Start, ?NOW),
     ActiveClients =  ts_client_sup:active_clients(),
     ?DebugF("Current active clients on beam: ~p (max is ~p)~n", [ActiveClients, State#launcher.maxusers]),
     case ActiveClients >= Max of
@@ -381,7 +383,7 @@ do_launch({Intensity, MyHostName})->
     %%Get one client
     %%set the profile of the client
     case catch ts_config_server:get_next_session(MyHostName) of
-        {timeout, _ } ->
+        [{'EXIT', {timeout, _ }}] ->
             ?LOG("get_next_session failed (timeout), skip this session !~n", ?ERR),
             ts_mon:add({ count, error_next_session }),
             error;
@@ -391,12 +393,13 @@ do_launch({Intensity, MyHostName})->
             ?DebugF("client launched, wait ~p ms before launching next client~n",[X]),
             {ok, X};
         Error ->
-            ?LOGF("get_next_session failed [~p], skip this session !~n", [Error],?ERR),
-            error
+            ?LOGF("get_next_session failed for unexpected reason [~p], abort !~n", [Error],?ERR),
+            ts_mon:add({ count, error_next_session }),
+            exit(shutdown)
     end.
 
 set_warm_timeout(StartDate)->
-    case ts_utils:elapsed(now(), StartDate) of
+    case ts_utils:elapsed(?NOW, StartDate) of
         WaitBeforeStart when WaitBeforeStart>0 ->
             round(WaitBeforeStart);
         _Neg ->
@@ -404,4 +407,20 @@ set_warm_timeout(StartDate)->
                  " machines are synchronized (ntp ?)~n"++
                  "Anyway, start launcher NOW! ~n", ?WARN),
             1
+    end.
+
+check_max_users(Max) ->
+    try
+        Data = os:cmd("grep \"open files\"  /proc/self/limits"),
+        {match,[Val]} = re:run(Data,"Max open files\\s+(\\d+)",[{capture,all_but_first,list}]),
+        Limit = list_to_integer(Val),
+        case (Max > Limit ) of
+            true ->
+                ?LOGF("WARNING !!! too few file descriptors available (~w), you should decrease maxusers (currently ~w)",[Limit,Max], ?CRIT);
+            false ->
+                ?LOGF("maxusers is below file descriptors limit (~p)",[Limit], ?DEB)
+        end
+    catch
+        Error:Reason ->
+            ?LOG("Can't get file descriptors limit from system, you should verify that 'maxusers' has a good value ",?NOTICE)
     end.

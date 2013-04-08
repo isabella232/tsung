@@ -42,7 +42,8 @@
          http_no_body/2,
          parse/2,
          parse_req/1,
-         parse_req/2
+         parse_req/2,
+         get_line/1
         ]).
 
 %%----------------------------------------------------------------------
@@ -59,12 +60,13 @@ http_get(Args) ->
 http_no_body(Method,#http_request{url=URL, version=Version, cookie=Cookie,
                               headers=Headers, user_agent=UA,
                               get_ims_date=undefined, soap_action=SOAPAction,
-                              host_header=Host, userid=UserId, passwd=Passwd})->
+                              host_header=Host}=Req)->
     ?DebugF("~p ~p~n",[Method,URL]),
     R = list_to_binary([Method, " ", URL," ", "HTTP/", Version, ?CRLF,
                     set_header("Host",Host,Headers, ""),
                     set_header("User-Agent",UA,Headers, ?USER_AGENT),
-                    authenticate(UserId,Passwd),
+                    authenticate(Req),
+                    oauth_sign(Method,Req),
                     soap_action(SOAPAction),
                     set_cookie_header({Cookie, Host, URL}),
                     headers(Headers),
@@ -75,14 +77,15 @@ http_no_body(Method,#http_request{url=URL, version=Version, cookie=Cookie,
 http_no_body(Method,#http_request{url=URL, version=Version, cookie=Cookie,
                              headers=Headers, user_agent=UA,
                              get_ims_date=Date, soap_action=SOAPAction,
-                             host_header=Host, userid=UserId, passwd=Passwd}) ->
+                             host_header=Host}=Req) ->
     ?DebugF("~p ~p~n",[Method, URL]),
     list_to_binary([Method, " ", URL," ", "HTTP/", Version, ?CRLF,
                     ["If-Modified-Since: ", Date, ?CRLF],
                     set_header("Host",Host,Headers, ""),
                     set_header("User-Agent",UA,Headers, ?USER_AGENT),
                     soap_action(SOAPAction),
-                    authenticate(UserId,Passwd),
+                    authenticate(Req),
+                    oauth_sign(Method,Req),
                     set_cookie_header({Cookie, Host, URL}),
                     headers(Headers),
                     ?CRLF]).
@@ -101,15 +104,15 @@ http_body(Method,#http_request{url=URL, version=Version,
                                cookie=Cookie, headers=Headers,
                                user_agent=UA, soap_action=SOAPAction,
                                content_type=ContentType,
-                               body=Content, host_header=Host,
-                               userid=UserId, passwd=Passwd}) ->
+                               body=Content, host_header=Host}=Req) ->
     ContentLength=integer_to_list(size(Content)),
     ?DebugF("Content Length of POST: ~p~n.", [ContentLength]),
     H = [Method, " ", URL," ", "HTTP/", Version, ?CRLF,
                set_header("Host",Host,Headers, ""),
                set_header("User-Agent",UA,Headers, ?USER_AGENT),
-               authenticate(UserId,Passwd),
+               authenticate(Req),
                soap_action(SOAPAction),
+               oauth_sign(Method, Req),
                set_cookie_header({Cookie, Host, URL}),
                headers(Headers),
                "Content-Type: ", ContentType, ?CRLF,
@@ -122,11 +125,65 @@ http_body(Method,#http_request{url=URL, version=Version,
 %%----------------------------------------------------------------------
 %% some HTTP headers functions
 %%----------------------------------------------------------------------
-authenticate(undefined,_)-> [];
-authenticate(_,undefined)-> [];
-authenticate(UserId,Passwd)->
+authenticate(#http_request{userid=undefined})-> [];
+authenticate(#http_request{passwd=undefined})-> [];
+authenticate(#http_request{passwd=Passwd, auth_type="basic",userid=UserId})->
     AuthStr = ts_utils:encode_base64(lists:append([UserId,":",Passwd])),
-    ["Authorization: Basic ",AuthStr,?CRLF].
+    ["Authorization: Basic ",AuthStr,?CRLF];
+
+authenticate(#http_request{method=Method, passwd=Passwd,userid=UserId,
+                           auth_type="digest", realm=Realm,
+                           digest_cnonce=CNonce, digest_nc=NC, digest_qop=QOP,
+                           digest_nonce=Nonce, digest_opaque=Opaque,
+                           url=URL
+                            }) ->
+    HA1 = md5_hex(string:join([UserId, Realm, Passwd], ":")),
+    HA2 = md5_hex(string:join([string:to_upper(atom_to_list(Method)), URL], ":")),
+    Response = digest_response({HA1, Nonce,NC, CNonce,QOP,HA2}),
+    digest_header(UserId,Realm,Nonce,URL,QOP,NC,CNonce,Response,Opaque).
+
+digest_header(User,Realm,Nonce,URI, QOP,NC,CNonce, Response,Opaque) ->
+    Acc= ["Authorization: Digest "
+          "username=\"",User,"\", ",
+          "realm=\"", Realm, "\", ",
+          "nonce=\"", Nonce, "\", ",
+          "uri=\"", URI, "\", ",
+          "response=\"", Response, "\""],
+    digest_header_opt(Acc, QOP, NC, CNonce, Opaque).
+
+%% qop and opaque are undefined
+digest_header_opt(Acc, undefined, _NC, _CNonce, undefined) ->
+    [Acc, ?CRLF];
+
+digest_header_opt(Acc, QOP, NC, CNonce, Opaque) when is_list(Opaque)->
+     NewAcc=[Acc,", opaque=\"",Opaque,"\""],
+    digest_header_opt(NewAcc,QOP,NC,CNonce,undefined);
+
+digest_header_opt(Acc, QOP, NC, CNonce,undefined) ->
+    NewAcc=[Acc,", qop=\"",QOP,"\"",
+                ", nc=", NC,
+                ", cnonce=\"", CNonce, "\""
+           ],
+    digest_header_opt(NewAcc,undefined,"","",undefined).
+
+digest_response({HA1,Nonce, _NC, _CNonce, undefined, HA2})-> %qop undefined
+    md5_hex(string:join([HA1, Nonce, HA2], ":"));
+digest_response({HA1,Nonce, NC, CNonce, QOP, HA2})->
+    md5_hex(string:join([HA1,Nonce,NC,CNonce,QOP,HA2], ":")).
+
+md5_hex(String)->
+    lists:flatten([io_lib:format("~2.16.0b",[N])||N<-binary_to_list(erlang:md5(String))]).
+
+
+oauth_sign(_, #http_request{oauth_consumer = undefined})->[];
+oauth_sign(Method, #http_request{url=URL,
+                         oauth_consumer=Consumer,
+                         oauth_access_token=AccessToken,
+                         oauth_access_secret=AccessSecret,
+                         oauth_url=ServerURL})->
+    UrlParams = oauth_uri:params_from_string(URL),
+    Params = oauth:signed_params(Method, ServerURL, UrlParams, Consumer, AccessToken, AccessSecret),
+    ["Authorization: OAuth ", oauth_uri:params_to_header_string(Params),?CRLF].
 
 %%----------------------------------------------------------------------
 %% @spec set_header(Name::string, Val::string | undefined, Headers::List,
@@ -226,25 +283,25 @@ parse(Data, State=#state_rcv{session=HTTP}) when element(1,HTTP#http.status)  ==
             {State#state_rcv{ack_done=false,session=HTTPRec,acc=Tail},[],false};
         %% Complete header, chunked encoding
         {ok, Http=#http{content_length=0, chunk_toread=0}, Tail} ->
-            DynData = concat_cookies(Http#http.cookie, State#state_rcv.dyndata),
+            NewCookies = concat_cookies(Http#http.cookie, Http#http.session_cookies),
             case parse_chunked(Tail, State#state_rcv{session=Http, acc=[]}) of
-                {NewState=#state_rcv{ack_done=false}, Opts} ->
-                    {NewState#state_rcv{dyndata=DynData}, Opts, false};
-                {NewState, Opts} ->
-                    {NewState#state_rcv{acc=[],dyndata=DynData}, Opts, Http#http.close}
+                {NewState=#state_rcv{ack_done=false, session=NewHttp}, Opts} ->
+                    {NewState#state_rcv{session=NewHttp#http{session_cookies=NewCookies}}, Opts, false};
+                {NewState=#state_rcv{session=NewHttp}, Opts} ->
+                    {NewState#state_rcv{acc=[],session=NewHttp#http{session_cookies=NewCookies}}, Opts, Http#http.close}
             end;
         {ok, Http=#http{content_length=0, close=true}, _} ->
             %% no content length, close=true: the server will close the connection
-            DynData = concat_cookies(Http#http.cookie, State#state_rcv.dyndata),
-            {State#state_rcv{session= Http, ack_done = false,
+            NewCookies = concat_cookies(Http#http.cookie, Http#http.session_cookies),
+            {State#state_rcv{ack_done = false,
                              datasize = TotalSize,
-                             dyndata= DynData}, [], true};
+                             session=Http#http{session_cookies=NewCookies}}, [], true};
         {ok, Http=#http{status={100,_}}, _} -> % Status 100 Continue, ignore.
             %% FIXME: not tested
             {State#state_rcv{ack_done=false,session=reset_session(Http)},[],false};
         {ok, Http, Tail} ->
-            DynData = concat_cookies(Http#http.cookie, State#state_rcv.dyndata),
-            check_resp_size(Http, length(Tail), DynData, State#state_rcv{acc=[]}, TotalSize, State#state_rcv.dump)
+            NewCookies = concat_cookies(Http#http.cookie, Http#http.session_cookies),
+            check_resp_size(Http#http{session_cookies=NewCookies}, length(Tail), State#state_rcv{acc=[]}, TotalSize, State#state_rcv.dump)
     end;
 
 %% continued chunked transfer
@@ -258,19 +315,16 @@ parse(Data, State=#state_rcv{session=Http}) when Http#http.chunk_toread >=0 ->
     end;
 
 %% continued normal transfer
-parse(Data, State) ->
-    PreviousSize = State#state_rcv.datasize,
+parse(Data,  State=#state_rcv{session=Http, datasize=PreviousSize}) ->
     DataSize = size(Data),
     ?DebugF("HTTP Body size=~p ~n",[DataSize]),
-    Http = State#state_rcv.session,
     CLength = Http#http.content_length,
     case Http#http.body_size + DataSize of
         CLength -> % end of response
             {State#state_rcv{session=reset_session(Http), acc=[], ack_done = true, datasize = CLength},
              [], Http#http.close};
         Size ->
-            NewHttp = (State#state_rcv.session)#http{body_size = Size},
-            {State#state_rcv{session = NewHttp, ack_done = false,
+            {State#state_rcv{session = Http#http{body_size = Size}, ack_done = false,
                              datasize = DataSize+PreviousSize}, [], false}
     end.
 
@@ -279,26 +333,22 @@ parse(Data, State) ->
 %% Purpose: Check response size
 %% Returns: {NewState= record(state_rcv), SockOpts, Close}
 %%----------------------------------------------------------------------
-check_resp_size(Http=#http{content_length=CLength, close=Close}, CLength,
-                DynData, State, DataSize, _Dump) ->
+check_resp_size(Http=#http{content_length=CLength, close=Close},
+                CLength, State, DataSize, _Dump) ->
     %% end of response
-    {State#state_rcv{session= reset_session(Http), ack_done = true,
-                     datasize = DataSize,
-                     dyndata= DynData}, [], Close};
-check_resp_size(Http=#http{content_length=CLength, close = Close},
-                BodySize, DynData, State, DataSize, Dump) when BodySize > CLength ->
+    {State#state_rcv{session= reset_session(Http), ack_done = true, datasize = DataSize }, [], Close};
+check_resp_size(Http=#http{content_length=CLength, close=Close},
+                BodySize, State, DataSize, Dump) when BodySize > CLength ->
     ?LOGF("Error: HTTP Body (~p)> Content-Length (~p) !~n",
           [BodySize, CLength], ?ERR),
     log_error(Dump, error_http_bad_content_length),
     {State#state_rcv{session= reset_session(Http), ack_done = true,
-                     datasize = DataSize,
-                     dyndata= DynData}, [], Close};
-check_resp_size(Http, BodySize, DynData, State, DataSize,_Dump) ->
+                     datasize = DataSize }, [], Close};
+check_resp_size(Http=#http{}, BodySize,  State, DataSize,_Dump) ->
     %% need to read more data
-    {State#state_rcv{session  = Http#http{ body_size=BodySize},
+    {State#state_rcv{session  = Http#http{body_size = BodySize},
                      ack_done = false,
-                     datasize = DataSize,
-                     dyndata  = DynData},[],false}.
+                     datasize = DataSize },[],false}.
 
 %%----------------------------------------------------------------------
 %% Func: parse_chunked/2
@@ -356,11 +406,11 @@ read_chunk_data(Data, State=#state_rcv{acc=[]}, Int, Acc) when size(Data) > Int-
     ?DebugF("Read ~p bytes of chunk with size = ~p~n", [Int, size(Data)]),
     <<_NewData:Int/binary, Rest/binary >> = Data,
     read_chunk(Rest, State,  0, Int + Acc);
-read_chunk_data(Data, State=#state_rcv{acc=[]}, Int, Acc) -> % not enough data in buffer
+read_chunk_data(Data, State=#state_rcv{acc=[],session=Http}, Int, Acc) -> % not enough data in buffer
     BodySize = size(Data),
     ?DebugF("Partial chunk received (~p/~p)~n", [BodySize,Int]),
-    NewHttp = (State#state_rcv.session)#http{chunk_toread   = Int-BodySize,
-                                             body_size      = BodySize + Acc},
+    NewHttp = Http#http{chunk_toread   = Int-BodySize,
+                        body_size      = BodySize + Acc},
     {State#state_rcv{session  = NewHttp,
                      ack_done = false, % continue to read data
                      datasize = BodySize + Acc},[]};
@@ -396,12 +446,8 @@ splitcookie([Char|Rest],Cur,Acc)->splitcookie(Rest, [Char|Cur], Acc).
 %% Purpose: add new cookies to a list of old ones. If the keys already
 %%          exists, replace with the new ones
 %%----------------------------------------------------------------------
-concat_cookies(New, DynData=#dyndata{proto=HTTPDyn}) ->
-    Cookies = HTTPDyn#http_dyndata.cookies,
-    NewCookies = concat_cookies(New,  Cookies),
-    DynData#dyndata{proto=HTTPDyn#http_dyndata{cookies=NewCookies}};
-concat_cookies([],  DynData) -> DynData;
-concat_cookies(New, []) -> New;
+concat_cookies([],  Cookies) -> Cookies;
+concat_cookies(Cookie, []) -> Cookie;
 concat_cookies([New=#cookie{}|Rest], OldCookies)->
     case lists:keysearch(New#cookie.key, #cookie.key, OldCookies) of
         {value, #cookie{domain=Dom}} when Dom == New#cookie.domain -> %same domain
@@ -551,8 +597,13 @@ parse_line("http/1.1 " ++ TailLine, Http, _Host )->
 parse_line("http/1.0 " ++ TailLine, Http, _Host)->
     parse_status(TailLine, Http#http{close=true});
 
-parse_line("content-length: "++Tail, Http, _Host)->
-    CL=list_to_integer(Tail),
+parse_line("content-length: "++Tail, Http, _Host) when hd(Tail) /= $\s ->
+    %% tuning: handle common case (single LWS) to avoid a call to string:strip
+    CL = list_to_integer(Tail),
+    ?DebugF("HTTP Content-Length ~p~n",[CL]),
+    Http#http{content_length=CL};
+parse_line("content-length:  "++Tail, Http, _Host)-> % multiple white spaces
+    CL = list_to_integer(string:strip(Tail)),
     ?DebugF("HTTP Content-Length ~p~n",[CL]),
     Http#http{content_length=CL};
 parse_line("connection: close"++_Tail, Http, _Host)->
@@ -561,15 +612,13 @@ parse_line("connection: close"++_Tail, Http, _Host)->
 parse_line("content-encoding: "++Tail, Http=#http{compressed={Prev,_}}, _Host)->
     ?DebugF("content encoding:~p ~n",[Tail]),
     Http#http{compressed={list_to_atom(Tail),Prev}};
-parse_line("transfer-encoding:"++[H|Tail], Http, _Host)->
-    ?DebugF("~p transfer encoding~n",[[H]++Tail]),
-    case Tail of
+parse_line("transfer-encoding:"++Tail, Http, _Host)->
+    ?DebugF("~p transfer encoding~n",[Tail]),
+    case string:strip(Tail) of
         [C|"hunked"++_] when C == $C; C == $c ->
             Http#http{chunk_toread=0};
-        "hunked"++_  when H == $C; H == $c->
-            Http#http{chunk_toread=0};
         _ ->
-            ?LOGF("Unknown transfer encoding ~p~n",[[H]++Tail],?NOTICE),
+            ?LOGF("Unknown transfer encoding ~p~n",[Tail],?NOTICE),
             Http
     end;
 parse_line("set-cookie: "++Tail, Http=#http{cookie=PrevCookies}, Host)->
@@ -613,10 +662,12 @@ get_line([], _, _) -> %% Headers are fragmented ... We need more data
     {more}.
 
 %% we need to keep the compressed value of the current request
-reset_session(#http{status={Status,_},compressed={Current,_},chunk_toread=Val}) when Val > -1 ->
-    #http{compressed={false,Current}, chunk_toread=-2, status={none,Status}} ;
-reset_session(#http{compressed={Current,_}, status={Status,_}} ) ->
-    #http{compressed={false,Current}, status={none,Status}}.
+reset_session(#http{user_agent=UA,session_cookies=Cookies,
+                    compressed={Compressed,_}, status= {Status,_}, chunk_toread=Val}) when Val > -1 ->
+    #http{session_cookies=Cookies,user_agent=UA,compressed={false,Compressed}, chunk_toread=-2, status={none,Status}} ;
+reset_session(#http{user_agent=UA,session_cookies=Cookies,
+                    compressed={Compressed,_}, status= {Status,_}})  ->
+    #http{session_cookies=Cookies,user_agent=UA,compressed={false,Compressed}, status={none,Status}}.
 
 log_error(protocol,Error) ->
     put(protocol_error,Error),

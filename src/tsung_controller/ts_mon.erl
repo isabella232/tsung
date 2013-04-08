@@ -37,7 +37,6 @@
 
 -behaviour(gen_server).
 
--include("ts_profile.hrl").
 -include("ts_config.hrl").
 
 %% External exports
@@ -58,7 +57,7 @@
 -record(state, {log,          % log fd
                 backend,      % type of backend: text|...
                 log_dir,      % log directory
-                fullstats,    % fullstats log filename
+                fullstats,    % fullstats fd
                 dump_interval,%
                 dumpfile,     % file used when dumptrafic is set light or full
                 client=0,     % number of clients currently running
@@ -106,12 +105,12 @@ add(nocache,Data) ->
 add(Data) ->
     ts_mon_cache:add(Data).
 
-add_match(Data,{UserId,SessionId,RequestId}) ->
-    add_match(Data,{UserId,SessionId,RequestId,[]});
-add_match(Data=[Head|_],{UserId,SessionId,RequestId,Bin}) ->
-    TimeStamp=now(),
+add_match(Data,{UserId,SessionId,RequestId,Tr,Name}) ->
+    add_match(Data,{UserId,SessionId,RequestId,[],Tr,Name});
+add_match(Data=[Head|_],{UserId,SessionId,RequestId,Bin,Tr,Name}) ->
+    TimeStamp=?NOW,
     put(last_match,Head),
-    ts_mon_cache:add_match(Data,{UserId,SessionId,RequestId,TimeStamp, Bin}).
+    ts_mon_cache:add_match(Data,{UserId,SessionId,RequestId,TimeStamp, Bin,Tr,Name}).
 
 status() ->
     gen_server:call({global, ?MODULE}, {status}).
@@ -131,17 +130,17 @@ endclient({Who, When, Elapsed}) ->
 sendmes({none, _, _})       -> skip;
 sendmes({protocol, _, _})   -> skip;
 sendmes({_Type, Who, What}) ->
-    gen_server:cast({global, ?MODULE}, {sendmsg, Who, now(), What}).
+    gen_server:cast({global, ?MODULE}, {sendmsg, Who, ?NOW, What}).
 
 rcvmes({none, _, _})    -> skip;
 rcvmes({protocol, _, _})-> skip;
 rcvmes({_, _, closed})  -> skip;
 rcvmes({_Type, Who, What})  ->
-    gen_server:cast({global, ?MODULE}, {rcvmsg, Who, now(), What}).
+    gen_server:cast({global, ?MODULE}, {rcvmsg, Who, ?NOW, What}).
 
 dump({none, _, _})-> skip;
-dump({Type, Who, What})  ->
-    gen_server:cast({global, ?MODULE}, {dump, Who, now(), What}).
+dump({_Type, Who, What})  ->
+    gen_server:cast({global, ?MODULE}, {dump, Who, ?NOW, What}).
 
 launcher_is_alive() ->
     gen_server:cast({global, ?MODULE}, {launcher_is_alive}).
@@ -159,23 +158,27 @@ launcher_is_alive() ->
 %%          {stop, Reason}
 %%----------------------------------------------------------------------
 init([LogDir]) ->
-    ?LOGF("Init, log dir is ~p~n",[LogDir],?NOTICE),
-    Base = filename:basename(?config(log_file)),
-    Filename = filename:join(LogDir, Base),
-    case file:open(Filename,[write]) of
-        {ok, Stream} ->
-            ?LOG("starting monitor~n",?NOTICE),
-            Stats = #stats{os_mon  = dict:new()},
-            {ok, #state{ log       = Stream,
-                         dump_interval = ?config(dumpstats_interval),
-                         log_dir   = LogDir,
-                         stats     = Stats,
-                         lastdate  = now(),
-                         laststats = Stats
-                       }};
-        {error, Reason} ->
-            ?LOGF("Can't open mon log file! ~p~n",[Reason], ?ERR),
-            {stop, Reason}
+    ?LOGF("Init, log dir is ~p~n",[LogDir],?INFO),
+    Stats = #stats{os_mon  = dict:new()},
+    State=#state{ dump_interval = ?config(dumpstats_interval),
+                  log_dir   = LogDir,
+                  stats     = Stats,
+                  lastdate  = ?NOW,
+                  laststats = Stats
+                },
+    case ?config(mon_file) of
+        "-" ->
+            {ok, State#state{log=standard_io}};
+        Name ->
+            Filename = filename:join(LogDir, Name),
+            case file:open(Filename,[write]) of
+                {ok, Stream} ->
+                    ?LOG("starting monitor~n",?INFO),
+                    {ok, State#state{log=Stream}};
+                {error, Reason} ->
+                    ?LOGF("Can't open mon log file! ~p~n",[Reason], ?ERR),
+                    {stop, Reason}
+            end
     end.
 
 %%----------------------------------------------------------------------
@@ -193,7 +196,7 @@ handle_call({start_logger, Machines, DumpType, Backend}, From, State) ->
 %%% get status
 handle_call({status}, _From, State) ->
     Request   = ts_stats_mon:status(request),
-    Interval  = ts_utils:elapsed(State#state.lastdate, now()) / 1000,
+    Interval  = ts_utils:elapsed(State#state.lastdate, ?NOW) / 1000,
     Phase     = ts_stats_mon:status(newphase,sum),
     Connected =  case ts_stats_mon:status(connected,sum) of
                      {ok, Val} -> Val;
@@ -280,7 +283,7 @@ handle_cast({dumpstats}, State=#state{stats=Stats}) ->
     NewSessions = ts_stats_mon:reset_all_stats(Stats#stats.session),
     NewOSmon = ts_stats_mon:reset_all_stats(Stats#stats.os_mon),
     NewStats = Stats#stats{session=NewSessions, os_mon=NewOSmon},
-    {noreply, State#state{laststats = Stats, stats=NewStats,lastdate=now()}};
+    {noreply, State#state{laststats = Stats, stats=NewStats,lastdate=?NOW}};
 
 
 handle_cast({sendmsg, _, _, _}, State = #state{type = none}) ->
@@ -328,7 +331,7 @@ handle_cast({stop}, State=#state{launchers=L}) -> % we should stop, wait until n
     {noreply, State#state{stop = true, launchers=L-1}};
 
 handle_cast({launcher_is_alive}, State=#state{launchers=L}) ->
-    ?LOG("A launcher has started~n", ?NOTICE),
+    ?LOG("A launcher has started~n", ?INFO),
     {noreply, State#state{launchers=L+1}};
 
 
@@ -361,8 +364,16 @@ terminate(Reason, State) ->
     export_stats(State),
     ts_stats_mon:status(ts_stats_mon), % blocking call to ts_stats_mon; this way, we are
                                        % sure the last call to dumpstats is finished
-    io:format(State#state.log,"EndMonitor:~w~n",[now()]),
-    file:close(State#state.log),
+    case State#state.backend of
+        json ->
+            io:format(State#state.log,"]}]}~n",[]);
+        _ ->
+            io:format(State#state.log,"EndMonitor:~w~n",[?NOW])
+        end,
+    case State#state.log of
+        standard_io -> ok;
+        Dev         -> file:close(Dev)
+    end,
     file:close(State#state.fullstats),
     slave:stop(node()),
     ok.
@@ -385,35 +396,34 @@ code_change(_OldVsn, StateData, _Extra) ->
 %% Returns: {reply, ok, State} | {stop, Reason, State}
 %%----------------------------------------------------------------------
 %% fulltext backend: open log file with compression enable and delayed_write
-start_logger({Machines, DumpType, fullstats}, _From, State) ->
+start_logger({Machines, DumpType, fullstats}, From, State=#state{fullstats=undefined}) ->
     Filename = filename:join(State#state.log_dir,?FULLSTATS_FILENAME),
     ?LOG("Open file with delayed_write for fullstats backend~n",?NOTICE),
     case file:open(Filename,[write, {delayed_write, ?DELAYED_WRITE_SIZE, ?DELAYED_WRITE_DELAY}]) of
         {ok, Stream} ->
-            ?LOG("Activate clients with fullstats backend~n",?NOTICE),
-            timer:apply_interval(State#state.dump_interval, ?MODULE, dumpstats, [] ),
-            start_launchers(Machines),
-            ts_stats_mon:set_output(fullstats,{State#state.log, Stream}),
-            ts_stats_mon:set_output(fullstats,{State#state.log, Stream}, transaction),
-            ts_stats_mon:set_output(fullstats,{State#state.log, Stream}, request),
-            ts_stats_mon:set_output(fullstats,{State#state.log, Stream}, connect),
-            ts_stats_mon:set_output(fullstats,{State#state.log, Stream}, page),
-            start_dump(State#state{type=DumpType, backend=fullstats, fullstats=Stream});
+            start_logger({Machines, DumpType, fullstats}, From, State#state{fullstats=Stream});
         {error, Reason} ->
             ?LOGF("Can't open mon log file ~p! ~p~n",[Filename,Reason], ?ERR),
             {stop, Reason, State}
     end;
 
-start_logger({Machines, DumpType, Backend}, _From, State) ->
+start_logger({Machines, DumpType, Backend}, _From, State=#state{log=Log,fullstats=FS}) ->
     ?LOGF("Activate clients with ~p backend~n",[Backend],?NOTICE),
+    print_headline(Log,Backend),
     timer:apply_interval(State#state.dump_interval, ?MODULE, dumpstats, [] ),
     start_launchers(Machines),
-    ts_stats_mon:set_output(text,{State#state.log,[]}),
-    ts_stats_mon:set_output(text,{State#state.log,[]}, transaction),
-    ts_stats_mon:set_output(text,{State#state.log,[]}, request),
-    ts_stats_mon:set_output(text,{State#state.log,[]}, connect),
-    ts_stats_mon:set_output(text,{State#state.log,[]}, page),
-    start_dump(State#state{type=DumpType, backend=text}).
+    ts_stats_mon:set_output(Backend,{Log,FS}),
+    ts_stats_mon:set_output(Backend,{Log,FS}, transaction),
+    ts_stats_mon:set_output(Backend,{Log,FS}, request),
+    ts_stats_mon:set_output(Backend,{Log,FS}, connect),
+    ts_stats_mon:set_output(Backend,{Log,FS}, page),
+    start_dump(State#state{type=DumpType, backend=Backend}).
+
+print_headline(Log,json)->
+    DateStr = ts_utils:now_sec(),
+    io:format(Log,"{~n \"stats\": [~n {\"timestamp\": ~p,  \"samples\": [",[DateStr]);
+print_headline(_Log,_Backend)->
+    ok.
 
 %% @spec start_dump(State::record(state)) -> {reply, Reply, State}
 %% @doc open file for dumping traffic
@@ -439,20 +449,30 @@ start_dump(State=#state{type=Type}) ->
 %%----------------------------------------------------------------------
 %% Func: export_stats/1
 %%----------------------------------------------------------------------
-export_stats(State=#state{log=Log,stats=Stats,laststats=LastStats}) ->
+export_stats(State=#state{log=Log,stats=Stats,laststats=LastStats, backend=json}) ->
+    DateStr = ts_utils:now_sec(),
+    io:format(Log,"]},~n {\"timestamp\": ~w,  \"samples\": [",[DateStr]),
+    %% print number of simultaneous users
+    io:format(Log,"   {\"name\": \"users\", \"value\": ~p, \"max\": ~p}",[State#state.client,State#state.maxclient]),
+    export_stats_common(json, Stats,LastStats,Log);
+
+export_stats(State=#state{log=Log,stats=Stats,laststats=LastStats, backend=BackEnd}) ->
     DateStr = ts_utils:now_sec(),
     io:format(Log,"# stats: dump at ~w~n",[DateStr]),
     %% print number of simultaneous users
     io:format(Log,"stats: ~p ~p ~p~n",[users,State#state.client,State#state.maxclient]),
-    Param = {(State#state.laststats)#stats.os_mon,State#state.log},
-    dict:fold(fun ts_stats_mon:print_stats_txt/3, Param, (State#state.stats)#stats.os_mon),
-    ts_stats_mon:print_stats_txt({session, sample}, Stats#stats.session,{[],Log}),
-    ts_stats_mon:print_stats_txt({users_count, count},
+    export_stats_common(BackEnd, Stats,LastStats,Log).
+
+export_stats_common(BackEnd, Stats,LastStats,Log)->
+    Param = {BackEnd,LastStats#stats.os_mon,Log},
+    dict:fold(fun ts_stats_mon:print_stats/3, Param, Stats#stats.os_mon),
+    ts_stats_mon:print_stats({session, sample}, Stats#stats.session,{BackEnd,[],Log}),
+    ts_stats_mon:print_stats({users_count, count},
                                  Stats#stats.users_count,
-                                 {LastStats#stats.users_count,Log}),
-    ts_stats_mon:print_stats_txt({finish_users_count, count},
-                                 Stats#stats.finish_users_count,
-                                 {LastStats#stats.finish_users_count,Log}),
+                                 {BackEnd,LastStats#stats.users_count,Log}),
+    ts_stats_mon:print_stats({finish_users_count, count},
+                             Stats#stats.finish_users_count,
+                             {BackEnd,LastStats#stats.finish_users_count,Log}),
     ts_stats_mon:dumpstats(request),
     ts_stats_mon:dumpstats(page),
     ts_stats_mon:dumpstats(connect),
@@ -464,10 +484,10 @@ export_stats(State=#state{log=Log,stats=Stats,laststats=LastStats}) ->
 %% @doc start the launcher on clients nodes
 %%----------------------------------------------------------------------
 start_launchers(Machines) ->
-    ?DebugF("Need to start tsung client on ~p~n",[Machines]),
+    ?LOGF("Tsung clients setup: ~p~n",[Machines],?DEB),
     GetHost = fun(A) -> list_to_atom(A#client.host) end,
     HostList = lists:map(GetHost, Machines),
-    ?DebugF("Hostlist is ~p~n",[HostList]),
+    ?LOGF("Starting tsung clients on hosts: ~p~n",[HostList],?NOTICE),
     %% starts beam on all client hosts
     ts_config_server:newbeams(HostList).
 

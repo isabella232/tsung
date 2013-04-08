@@ -35,7 +35,6 @@
 
 -behaviour(gen_server).
 
--include("ts_profile.hrl").
 -include("ts_config.hrl").
 
 %% External exports, API
@@ -45,7 +44,8 @@
          status/1, status/2 ]).
 
 %% More external exports for ts_mon
--export([print_stats_txt/3, update_stats/3, add_stats_data/2, reset_all_stats/1]).
+-export([update_stats/3, add_stats_data/2, reset_all_stats/1]).
+-export([print_stats/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
@@ -55,7 +55,7 @@
                 backend,      % type of backend: text|rrdtool|fullstats
                 dump_interval,%
                 type = ts_stats_mon, % type of stats
-                fullstats,    % fullstats filename
+                fullstats,    % fullstats fd
                 stats,        % dict keeping stats info
                 laststats     % values of last printed stats
                }).
@@ -69,11 +69,11 @@
 %% @doc Start the monitoring process
 %%----------------------------------------------------------------------
 start(Id) ->
-    ?LOGF("starting ~p stats server, global ~n",[Id],?NOTICE),
+    ?LOGF("starting ~p stats server, global ~n",[Id],?INFO),
     gen_server:start_link({global, Id}, ?MODULE, [Id], []).
 
 start() ->
-    ?LOG("starting stats server, global ~n",?NOTICE),
+    ?LOG("starting stats server, global ~n",?INFO),
     gen_server:start_link({global, ?MODULE}, ?MODULE, [?MODULE], []).
 
 stop(Id) ->
@@ -119,7 +119,7 @@ set_output(BackEnd,Stream,Id) ->
 %%----------------------------------------------------------------------
 %% single type of data: don't need a dict, a simple list can store the data
 init([Type]) when Type == 'connect'; Type == 'page'; Type == 'request' ->
-    ?LOGF("starting dedicated stats server for ~p ~n",[Type],?NOTICE),
+    ?LOGF("starting dedicated stats server for ~p ~n",[Type],?INFO),
     Stats = [0,0,0,0,0,0,0,0],
     {ok, #state{ dump_interval = ?config(dumpstats_interval),
                  stats     = Stats,
@@ -128,7 +128,7 @@ init([Type]) when Type == 'connect'; Type == 'page'; Type == 'request' ->
                 }};
 %% id = transaction or ?MODULE: it can handle several types of stats, must use a dict.
 init([Id]) ->
-    ?LOGF("starting ~p stats server~n",[Id],?NOTICE),
+    ?LOGF("starting ~p stats server~n",[Id],?INFO),
     Tab = dict:new(),
     {ok, #state{ dump_interval = ?config(dumpstats_interval),
                  stats   = Tab,
@@ -222,7 +222,7 @@ handle_info(_Info, State) ->
 %% Returns: any (ignored by gen_server)
 %%----------------------------------------------------------------------
 terminate(Reason, State) ->
-    ?LOGF("stoping stats monitor (~p)~n",[Reason],?NOTICE),
+    ?LOGF("stopping stats monitor (~p)~n",[Reason],?INFO),
     export_stats(State),
     ok.
 
@@ -258,46 +258,71 @@ add_stats_data({sum, Name, Val}, Stats)  ->
 %%----------------------------------------------------------------------
 %% Func: export_stats/2
 %%----------------------------------------------------------------------
-export_stats(State=#state{type=Type}) when Type == 'connect'; Type == 'page'; Type == 'request' ->
-    Param = {State#state.laststats,State#state.log},
-    print_stats_txt({Type,sample}, State#state.stats, Param);
-export_stats(State=#state{backend=_Backend}) ->
-    Param = {State#state.laststats,State#state.log},
-    dict:fold(fun print_stats_txt/3, Param, State#state.stats).
+export_stats(State=#state{type=Type,backend=Backend}) when Type == 'connect'; Type == 'page'; Type == 'request' ->
+    Param = {Backend,State#state.laststats,State#state.log},
+    print_stats({Type,sample}, State#state.stats, Param);
+export_stats(State=#state{backend=Backend}) ->
+    Param = {Backend,State#state.laststats,State#state.log},
+    dict:fold(fun print_stats/3, Param, State#state.stats).
 
 %%----------------------------------------------------------------------
-%% Func: print_dist_list/3
-%% @spec (Key::tuple(), Value::List, {Last, Logfile}) -> {Last, Logfile}
-%% @doc print statistics in text format in Logfile
+%% @spec print_stats({Backend::tuple(),Name::tuple(),
+%%                   Type::sample|count|sum|sample_counter}, Value::list(),
+%%                   {Last, Logfile} ) -> {Last, Logfile}
+%% @doc print statistics in text format in Logfile @end
 %%----------------------------------------------------------------------
-print_stats_txt({_Name,_Type}, [], {LastRes,Logfile})->
-    {LastRes, Logfile};
-print_stats_txt({_Name,_Type}, [0,0,0,0,0,0,0|_], {LastRes,Logfile})->
-    {LastRes,Logfile};
-print_stats_txt({Name,_Type}, [Mean,0,Max,Min,Count,MeanFB,CountFB|_], {LastRes,Logfile})->
-    io:format(Logfile, "stats: ~p ~p ~p ~p ~p ~p ~p ~p~n",
+print_stats({_,_}, [], {Backend,LastRes,Logfile})->
+    {Backend,LastRes, Logfile};
+print_stats({_,_}, [0,0,0,0,0,0,0|_], {Backend,LastRes,Logfile})->
+    {Backend,LastRes, Logfile};
+print_stats({_,_,_}, 0, {Backend,0, Logfile})-> % no data yet
+    {Backend,0, Logfile};
+print_stats({{Name,Node},Type},Value,{json,Res,Log}) when (Type =:= sample) orelse (Type =:= sample_counter) ->
+    [_,Host] = string:tokens(Node,"@"),
+    print_stats_txt({Name,Type,", {\"name\": \"~p\", \"hostname\": \"" ++ Host
+                     ++"\", \"value\": ~p, \"mean\": ~p,\"stddev\": ~p,\"max\": ~p,\"min\": ~p ,\"global_mean\": ~p ,\"global_count\": ~p}"},Value,{json,Res,Log});
+
+print_stats({Name,Type},Value,{json,Res,Log}) when (Type =:= sample) orelse (Type =:= sample_counter) ->
+    print_stats_txt({Name,Type,", {\"name\": \"~p\", \"value\": ~p, \"mean\": ~p,\"stddev\": ~p,\"max\":  ~p,\"min\": ~p ,\"global_mean\": ~p ,\"global_count\": ~p}"},Value,{json,Res,Log});
+
+print_stats({Name,Type},Value,Other) when Type =:= sample orelse Type =:= sample_counter ->
+    print_stats_txt({Name,Type,"stats: ~p ~p ~p ~p ~p ~p ~p ~p~n"},Value,Other);
+
+print_stats({Name,Type},Value,{json,Res,Log}) when is_integer(Name) -> % http return code
+    print_stats_txt({"http_"++integer_to_list(Name),Type,
+                     ", {\"name\": \"~s\", \"value\": ~p, \"total\": ~p}"},Value,{json,Res,Log});
+
+print_stats({Name=connected,Type},Value,{json,Res,Log}) ->
+    print_stats_txt({Name,Type,", {\"name\": \"~p\", \"value\": ~p, \"max\": ~p}"},Value,{json,Res,Log});
+print_stats({Name,Type},Value,{json,Res,Log}) ->
+    print_stats_txt({Name,Type,", {\"name\": \"~p\", \"value\": ~p, \"total\": ~p}"},Value,{json,Res,Log});
+print_stats({Name,Type},Value,Other) ->
+    print_stats_txt({Name,Type,"stats: ~p ~p ~p~n"},Value,Other).
+
+
+%% @spec print_stats_txt(tuple(),Data::list(),tuple()) -> {Backend::atom(),LastRest::term(), LogFile::term()}
+print_stats_txt({Name,_,Format}, [Mean,0,Max,Min,Count,MeanFB,CountFB|_], {Backend,LastRes,Logfile})->
+    io:format(Logfile, Format,
               [Name, Count, Mean, 0, Max, Min,MeanFB,CountFB ]),
-    {LastRes, Logfile};
-print_stats_txt({Name,_Type},[Mean,Var,Max,Min,Count,MeanFB,CountFB|_],{LastRes,Logfile})->
-    StdVar = math:sqrt(Var/Count),
-    io:format(Logfile, "stats: ~p ~p ~p ~p ~p ~p ~p ~p~n",
-              [Name, Count, Mean, StdVar, Max, Min, MeanFB,CountFB]),
-    {LastRes, Logfile};
-print_stats_txt({Name, _Type}, [Value,Last], {LastRes, Logfile}) ->
-    io:format(Logfile, "stats: ~p ~p ~p~n", [Name, Value, Last ]),
-    {LastRes, Logfile};
-print_stats_txt({_Name, _Type}, 0, {0, Logfile})-> % no data yet
-    {0, Logfile};
-print_stats_txt({Name, _Type}, Value, {LastRes, Logfile}) when is_number(LastRes)->
-    io:format(Logfile, "stats: ~p ~p ~p~n", [Name, Value-LastRes, Value]),
-    {LastRes, Logfile};
-print_stats_txt({Name, Type}, Value, {LastRes, Logfile}) ->
+    {Backend,LastRes, Logfile};
+print_stats_txt({Name,_,Format},[Mean,Var,Max,Min,Count,MeanFB,CountFB|_],{Backend,LastRes,Logfile})->
+    StdDev = math:sqrt(Var/Count),
+    io:format(Logfile, Format,
+              [Name, Count, Mean, StdDev, Max, Min, MeanFB,CountFB]),
+    {Backend,LastRes, Logfile};
+print_stats_txt({Name, _,Format}, [Value,Last], {Backend,LastRes, Logfile}) ->
+    io:format(Logfile, Format, [Name, Value, Last ]),
+    {Backend,LastRes, Logfile};
+print_stats_txt({Name, _,Format}, Value, {Backend,LastRes, Logfile}) when is_number(LastRes)->
+    io:format(Logfile, Format, [Name, Value-LastRes, Value]),
+    {Backend,LastRes, Logfile};
+print_stats_txt({Name, Type, Format}, Value, {Backend,LastRes, Logfile}) when is_number(Value)->
     PrevVal = case dict:find({Name, Type}, LastRes) of
                   {ok, OldVal} -> OldVal;
                   error        -> 0
               end,
-    io:format(Logfile, "stats: ~p ~p ~p~n", [Name, Value-PrevVal, Value]),
-    {LastRes, Logfile}.
+    io:format(Logfile, Format, [Name, Value-PrevVal, Value]),
+    {Backend,LastRes, Logfile}.
 
 
 %%----------------------------------------------------------------------

@@ -27,7 +27,7 @@
 -vc('$Id$ ').
 -author('Nicolas.Niclausse@niclux.org').
 
--include("ts_profile.hrl").
+-include("ts_macros.hrl").
 -include("ts_http.hrl").
 -include("ts_recorder.hrl").
 
@@ -35,6 +35,7 @@
 -export([parse/4, record_request/2, socket_opts/0]).
 -export([decode_basic_auth/1, gettype/0]).
 
+-export([client_close/2]).
 -export([rewrite_serverdata/1]).
 -export([rewrite_ssl/1]).
 
@@ -64,6 +65,12 @@ rewrite_serverdata(Data)->
 rewrite_ssl(Data)->
     %% FIXME: content length may have changed !
     ts_utils:to_https(Data).
+
+%%--------------------------------------------------------------------
+%% Func: client_close/2
+%%--------------------------------------------------------------------
+client_close(_Socket,State)->
+    State.
 
 %%--------------------------------------------------------------------
 %% Func: parse/4
@@ -291,20 +298,21 @@ record_request(State=#state_rec{prev_host=Host, prev_port=Port, prev_scheme=Sche
                     State#state_rec.ext_file_id;
                 _  ->
                     Id=State#state_rec.ext_file_id,
-                    case ts_utils:key1search(ParsedHeader,"content-type") of
-                        "multipart/form-data" ++ _Tail->
+                    case save_binary_post(ts_utils:key1search(ParsedHeader,"content-type")) of
+                        true ->
                             FileName=ts_utils:append_to_filename(State#state_rec.log_file,".xml","-"++integer_to_list(Id)++".bin"),
                             ?LOGF("multipart/form-data, write body data in external binary file ~s~n",[FileName],?NOTICE),
                             ok = file:write_file(FileName,list_to_binary(Body)),
                             io:format(Fd," contents_from_file='~s' ", [FileName]),
                             Id+1;
-                        _CT ->
+                        false ->
                             Body2 = ts_utils:export_text(Body),
                             ?LOG("Write body data in XML encoded string ~n",?NOTICE),
                             io:format(Fd," contents='~s' ", [Body2]),
                             Id
                     end
             end,
+
 
     %% Content-type recording (This is useful for SOAP post for example):
     record_header(Fd,ParsedHeader,"content-type", "content_type='~s' "),
@@ -321,6 +329,17 @@ record_request(State=#state_rec{prev_host=Host, prev_port=Port, prev_scheme=Sche
 
     io:format(Fd,"</http></request>~n",[]),
     {ok,State#state_rec{prev_port=NewPort,ext_file_id=NewId,prev_host=NewHost,prev_scheme=NewScheme}}.
+
+
+%% should we save the content of a  POST in an external binary file ?
+save_binary_post("multipart/form-data"++_Tail) -> true;
+save_binary_post("application/x-amf") -> true;
+save_binary_post("application/x-silverlight-app") -> true;
+save_binary_post("application/xaml+xml") -> true;
+save_binary_post("application/x-ms-xbap") -> true;
+save_binary_post("application/soap+msbin1") -> true;
+save_binary_post("application/msbin1") -> true;
+save_binary_post(_) -> false.
 
 %%--------------------------------------------------------------------
 %% Func: decode_basic_auth/1

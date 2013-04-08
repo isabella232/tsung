@@ -35,7 +35,7 @@
 %%--------------------------------------------------------------------
 %% Include files
 %%--------------------------------------------------------------------
--include("ts_profile.hrl").
+-include("ts_macros.hrl").
 -include("ts_http.hrl").
 -include("ts_recorder.hrl").
 
@@ -146,6 +146,9 @@ handle_call(_Request, _From, State) ->
 handle_cast({record, endsession}, State) ->
     io:format(State#state_rec.logfd,"</session>"),
     {noreply, State};
+
+handle_cast({record, {Request,PluginState}}, State) ->
+    handle_cast({record, {Request}}, State#state_rec{plugin_state=PluginState});
 
 handle_cast({record, {Request}}, State=#state_rec{timestamp=0,plugin=Plugin}) -> % first record
     Name= ts_utils:datestr(),
