@@ -299,6 +299,7 @@ handle_info2({gen_ts_transport, Socket, Data}, think,State=#state_rcv{
   clienttype=Type, bidi=true,host=Host,port=Port})  ->
     ts_mon:rcvmes({State#state_rcv.dump, self(), Data}),
     ts_mon:add({ sum, size_rcv, size(Data)}),
+    handle_ttd(Data, State),
     Proto = State#state_rcv.protocol,
     ?LOG("Data received from socket (bidi) in state think~n",?INFO),
     NewState = case Type:parse_bidi(Data, State) of
@@ -320,6 +321,7 @@ handle_info2({gen_ts_transport, Socket, Data}, think, State = #state_rcv{request
   when (Req#ts_request.ack /= parse) ->
     ts_mon:rcvmes({State#state_rcv.dump, self(), Data}),
     ts_mon:add({ sum, size_rcv, size(Data)}),
+    handle_ttd(Data, State),
     ?LOGF("Data receive from socket in state think, ack=~p, skip~n",
           [Req#ts_request.ack],?NOTICE),
     ?DebugF("Data was ~p~n",[Data]),
@@ -328,6 +330,7 @@ handle_info2({gen_ts_transport, Socket, Data}, think, State = #state_rcv{request
 handle_info2({gen_ts_transport, _Socket, Data}, think, State) ->
     ts_mon:rcvmes({State#state_rcv.dump, self(), Data}),
     ts_mon:add({ count, error_unknown_data }),
+    handle_ttd(Data, State),
     ?LOG("Data receive from socket in state think, stop~n", ?ERR),
     ?DebugF("Data was ~p~n",[Data]),
     {stop, normal, State};
@@ -957,6 +960,7 @@ set_thinktime(Think) ->
 handle_ttd(Response, State) ->
     case re:run(Response, "<body>([0-9]+)</body>", [{capture, all_but_first, list}]) of
         nomatch ->
+            ?LOGF("TTD timestamp not found~n",[],?DEB),
             ok;
         %% add time to deliver to statistics
         {match, TtdList} ->
@@ -964,6 +968,7 @@ handle_ttd(Response, State) ->
                     Ttd = list_to_integer(TtdS),
                     {MegaSec, Sec, MicroSec} = now(),
                     Now = MegaSec * 1000000000 + Sec * 1000 + (MicroSec div 1000),
+                    ?LOGF("Got timestamp: ~p, TTD: ~p~n",[Ttd, Now-Ttd], ?DEB),
                     ts_mon:add({sample, msg_ttd, Now - Ttd})
             end,
             lists:map(Fun, TtdList)

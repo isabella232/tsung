@@ -57,7 +57,8 @@
                  node_type,
                  subid,
                  version ="1.0", %% 1.0 or "legacy", used by type=connect
-                 prefix   %% username prefix
+                 prefix,   %% username prefix
+                 receipt
                 }).
 
 -define(setroster_intensity, 1/(ts_utils:get_val(setroster)*1000)).
