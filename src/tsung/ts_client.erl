@@ -229,6 +229,7 @@ handle_info2({gen_ts_transport, _Socket, Data}, wait_ack, State=#state_rcv{rate_
                             {S1,_Wait}=token_bucket(R,Burst,S0,T0,size(Data),?NOW,true),
                             TokenParam#token_bucket{current_size=S1, last_packet_date=?NOW}
                     end,
+    handle_ttd(Data, State),
     {NewState, Opts} = handle_data_msg(Data, State),
     NewSocket = (NewState#state_rcv.protocol):set_opts(NewState#state_rcv.socket,
                                                        [{active, once} | Opts]),
@@ -947,6 +948,26 @@ set_thinktime(Think) ->
     erlang:start_timer(Think, self(), end_thinktime ),
     Think.
 
+%%----------------------------------------------------------------------
+%% Func: handle_ttd/2
+%% Args: Response (binary), State ('state_rcv' record)
+%% Returns: ok
+%% Purpose: handle Time-To-Deliver timestamp in message body
+%%----------------------------------------------------------------------
+handle_ttd(Response, State) ->
+    case re:run(Response, "<body>([0-9]+)</body>", [{capture, all_but_first, list}]) of
+        nomatch ->
+            ok;
+        %% add time to deliver to statistics
+        {match, TtdList} ->
+            Fun = fun(TtdS) ->
+                    Ttd = list_to_integer(TtdS),
+                    {MegaSec, Sec, MicroSec} = now(),
+                    Now = MegaSec * 1000000000 + Sec * 1000 + (MicroSec div 1000),
+                    ts_mon:add({sample, msg_ttd, Now - Ttd})
+            end,
+            lists:map(Fun, TtdList)
+    end.
 
 %%----------------------------------------------------------------------
 %% Func: handle_data_msg/2

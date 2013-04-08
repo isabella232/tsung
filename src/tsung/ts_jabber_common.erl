@@ -485,7 +485,7 @@ message(Dest, #jabber{size=Size,data=undefined}, Service) when is_integer(Size) 
     list_to_binary([
                     "<message id='",ts_msg_server:get_id(list), "' to='",
                     Dest, "@", Service,
-                    "' type='chat'><body>",ts_utils:urandomstr_noflat(Size), "</body></message>"]);
+                    "' type='chat'><body>",get_time(), "</body></message>"]);
 message(Dest, #jabber{data=Data}, Service) when is_list(Data) ->
     put(previous, Dest),
     list_to_binary([
@@ -745,3 +745,7 @@ set_id(user_defined,User,Passwd) ->
     {User,Passwd};
 set_id(Id,_User,_Passwd) ->
     Id.
+
+get_time() ->
+    {Mega, Sec, Micro} = now(),
+    integer_to_list(Mega*1000000000+Sec*1000+(Micro div 1000)).
