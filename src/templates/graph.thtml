@@ -6,7 +6,7 @@
 <div id="response_time">
 <h3>Response Time</h3> 
 <table>
-<tr><th>Transactions and Pages</th><th>Requests and connection establishment</th></tr>
+<tr><th>Transactions and Pages</th><th>Requests and connection establishment</th><th>Timestamped messages TTD</th></tr>
 <tr>
  <td>
  <a class="tooltip" href="images/graphes-Transactions-mean.[% ext %]">
@@ -22,6 +22,13 @@ is a group of requests not separated by a thinktime).</span>
 establishment only.<em>request</em> Mean duration of requests.</span>
   </a>
  </td>
+ [% IF msgttd %]
+ <td>
+  <a href="images/graphes-TimestampedMessages-mean.[% ext %]">
+   <img class="graph" src="images/graphes-TimestampedMessages-mean_tn.png" alt="Mean message time-to-delivery"/> 
+  </a>
+ </td>
+ [% END %]
  </tr>
 </table>
 </div>

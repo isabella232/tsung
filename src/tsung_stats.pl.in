@@ -402,6 +402,8 @@ sub parse_stats_file {
                 $category->{$type} = "network";
             } elsif ($type =~ /^error/) {
                 $category->{$type} = "error";
+            } elsif ($type =~ /^msg_ttd/) {
+                $category->{$type} = "stats";
              } elsif ($type =~ /^bidi/ or $type eq "request_noack") {
                 $async = 1;
                  $category->{$type} = "count";
@@ -443,6 +445,7 @@ sub parse_stats_file {
     }
     my @time;
     my @errors;
+    my @msgttd;
     my @tps;
     my @bosh_tps;
     my @code;
@@ -496,6 +499,8 @@ sub parse_stats_file {
             push @match, "$key.txt";
         } elsif ($key =~ /^error/) {
             push @errors, "$key.txt";
+        } elsif ($key =~ /^msg_ttd/) {
+            push @msgttd, "$key.txt";
         } elsif ($key=~ /^bidi/ or $key eq "request_noack") {
             push @async, "$key.txt";
         } elsif ($key =~ /request$/ or $key eq "connect" or $key eq "async_rcv") {
@@ -522,6 +527,7 @@ sub parse_stats_file {
     plot_stats(\@colcount,\@colcount,"Bosh",undef,\@bosh_tps,["rate"],$logy) unless $noplot;
     plot_stats(\@col,["Request and tcp/udp connection rate","Mean request (and connection) duration","stddev","max_sample","min_sample"],"Perfs",undef,\@tps,["Requests rate (r/sec)","Requests duration (msec)"],$logy) unless $noplot;
     plot_stats(\@col,["Transaction and page rate", "Mean transaction and page duration","stddev","max_sample","min_sample"],"Transactions",undef,\@transactions,["transactions/sec","Transaction duration (msec)"],$logy) unless $noplot;
+    plot_stats(\@col,["Rate", "Mean time-to-delivery","stddev","max_sample","min_sample"],"TimestampedMessages",undef,\@msgttd,["msg/sec","Time-to-delivery (msec)"],$logy) unless $noplot;
     plot_stats(\@colcount,\@colcount,"Match",undef,\@match,["rate","rate"],$logy) unless $noplot;
     plot_stats(\@colcount,\@colcount,"Event",undef,\@time,["rate","msec"],$logy) unless $noplot;
     plot_stats(\@colasync,\@colasync,"Async",undef,\@async,["rate","rate"],$logy) unless $noplot;
@@ -535,6 +541,7 @@ sub parse_stats_file {
     plot_stats_dygraph(\@colcount,"Bosh",undef,\@bosh_tps,["rate"],$logy) if not $noplot and @bosh_tps;
     plot_stats_dygraph(\@col,"Perfs",undef,\@tps,["rate","msec"],$logy) unless $noplot;
     plot_stats_dygraph(\@col,"Transactions",undef,\@transactions,["transactions/sec","msec"],$logy) unless $noplot;
+    plot_stats_dygraph(\@col,"Timestamped messages time-to-delivery",undef,\@msgttd,["msg/sec","msec"],$logy) unless $noplot;
     plot_stats_dygraph(\@colcount,"Match",undef,\@match,["rate","rate"],$logy) unless $noplot;
     plot_stats_dygraph(\@colcount,"Event",undef,\@time,["rate","msec"],$logy) unless $noplot;
     plot_stats_dygraph(\@colasync,"Async",undef,\@async,["rate","rate"],$logy) unless $noplot;
@@ -578,6 +585,7 @@ sub html_report {
             $xml_conf= $file;
         }
     }
+    my $msgttd;
     foreach my $type ("mean", "maxmean", "minmean") {
         foreach my $data (keys % {$maxval->{$type}} ) {
             next if ($data =~ m/^size/);
@@ -585,7 +593,10 @@ sub html_report {
                 $maxval->{$type}->{$data} = sprintf "%.2f",$maxval->{$type}->{$data};
                 next;
             }
-            next if not ($data eq "session" or $data eq "connect" or $data eq "request" or $data eq "page" or $data =~ m/^tr_/);
+            next if not ($data eq "session" or $data eq "connect" or $data eq "request" or $data eq "page" or $data =~ m/^tr_/ or $data eq "msg_ttd");
+            if ($data eq "msg_ttd") {
+                $msgttd = 1;
+            }
             $maxval->{$type}->{$data} = &formattime($maxval->{$type}->{$data});
         }
     }
@@ -619,6 +630,7 @@ sub html_report {
          version     => $version,
          os_mon      => $extra,
          errors      => $errors,
+         msgttd      => $msgttd,
          http        => $http,
          match       => $match,
          async       => $async,
