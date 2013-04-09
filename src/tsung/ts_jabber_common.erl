@@ -480,18 +480,21 @@ registration(#jabber{username=Name,passwd=Passwd,resource=Resource})->
 %% Func: message/3
 %% Purpose: send message to defined user at the Service (aim, ...)
 %%----------------------------------------------------------------------
-message(Dest, #jabber{size=Size,data=undefined}, Service) when is_integer(Size) ->
+message(Dest, #jabber{size=undefined,data=undefined} = Jabber, Service) ->
+    message(Dest, Jabber#jabber{data=get_time()}, Service);
+message(Dest, #jabber{size=Size,data=undefined} = Jabber, Service) when is_integer(Size) ->
+    message(Dest, Jabber#jabber{data = ts_utils:urandomstr_noflat(Size)}, Service);
+message(Dest, #jabber{data=Data} = Jabber, Service) when is_list(Data) ->
     put(previous, Dest),
     list_to_binary([
                     "<message id='",ts_msg_server:get_id(list), "' to='",
                     Dest, "@", Service,
-                    "' type='chat'><body>",get_time(), "</body></message>"]);
-message(Dest, #jabber{data=Data}, Service) when is_list(Data) ->
-    put(previous, Dest),
-    list_to_binary([
-                    "<message id='",ts_msg_server:get_id(list), "' to='",
-                    Dest, "@", Service,
-                    "' type='chat'><body>",Data, "</body></message>"]).
+                    "' type='chat'><body>",Data, "</body>", get_message_extra(Jabber), "</message>"]).
+
+get_message_extra(#jabber{ receipt = true }) ->
+    "<request xmlns='urn:xmpp:receipts'/>";
+get_message_extra(_) ->
+    "".
 
 %%----------------------------------------------------------------------
 %% Func: presence/0
