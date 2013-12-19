@@ -74,6 +74,7 @@ start() {
     echo "Starting Tsung"
     $ERL $ERL_OPTS $ERL_RSH -noshell $PROTO_DIST $NAMETYPE $CONTROLLER -setcookie $COOKIE  $BOOT_OPT \
     -pa $TSUNGPATH -pa $CONTROLLERPATH \
+    -env ERL_FULLSWEEP_AFTER 2 \
     -tsung_controller smp_disable $SMP_DISABLE \
     -tsung_controller debug_level $DEBUG_LEVEL \
     -tsung_controller warm_time $WARM_TIME \
@@ -84,6 +85,7 @@ start() {
 debug() {
     $ERL $ERL_OPTS $ERL_RSH $NAMETYPE $CONTROLLER $PROTO_DIST -setcookie $COOKIE $BOOT_OPT \
      -pa $TSUNGPATH -pa $CONTROLLERPATH \
+     -env ERL_FULLSWEEP_AFTER 2 \
      -tsung_controller warm_time $WARM_TIME \
      -tsung_controller config_file \"$CONF_OPT_FILE\" \
      -tsung_controller exclude_tag \"$EXCLUDE_TAG_LIST\" \

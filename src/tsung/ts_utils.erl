@@ -320,7 +320,8 @@ erl_system_args(extended)->
               "5.3" ++ _Tail     -> " +Mea r10b ";
               _ -> " "
           end,
-    lists:append([BasicArgs, Shared, Hybrid, Smp, Mea, Inet, Proto, Threads,ProcessMax,ListenMin,ListenMax]).
+    Fullsweep = " -env ERL_FULLSWEEP_AFTER 2 ",
+    lists:append([BasicArgs, Shared, Hybrid, Smp, Mea, Inet, Proto, Threads,ProcessMax,ListenMin,ListenMax,Fullsweep]).
 
 %%----------------------------------------------------------------------
 %% setsubdir/1
